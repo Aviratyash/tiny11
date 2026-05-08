@@ -508,6 +508,14 @@ Write-Step 'Copying ISO structure...'
 robocopy "$ISODrive" $BuildRoot /E /J /MT:16 /R:0 /W:0 /XF install.wim install.esd /NFL /NDL /NP | Out-Null
 Move-Item $WimPath "$BuildRoot\sources\install.wim" -Force
 
+# Strip read-only attributes inherited from the ISO (optical media marks everything R/O).
+# Without this, DISM refuses to mount for read-write and boot.wim patching also fails.
+Write-Step 'Clearing read-only attributes on build tree...'
+Get-ChildItem -Path $BuildRoot -Recurse -Force |
+    Where-Object { -not $_.PSIsContainer -and ($_.Attributes -band [IO.FileAttributes]::ReadOnly) } |
+    ForEach-Object { $_.Attributes = $_.Attributes -band -bnot [IO.FileAttributes]::ReadOnly }
+Write-Ok 'Read-only attributes cleared'
+
 #endregion
 
 #region ─── MOUNT install.wim ────────────────────────────────────────────────
@@ -722,8 +730,11 @@ Dismount-WindowsImage -Path $MountDir -Save
 #region ─── PATCH boot.wim ───────────────────────────────────────────────────
 
 Write-Step 'Patching boot.wim...'
+# Ensure boot.wim is also writable (same R/O inheritance issue)
+$bootWimPath = "$BuildRoot\sources\boot.wim"
+Set-ItemProperty -Path $bootWimPath -Name Attributes -Value ([IO.FileAttributes]::Normal)
 Mount-WindowsImage `
-    -ImagePath        "$BuildRoot\sources\boot.wim" `
+    -ImagePath        $bootWimPath `
     -Index            2 `
     -Path             $MountDir `
     -ScratchDirectory $TempDir
