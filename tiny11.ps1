@@ -93,14 +93,6 @@ $script:OpenHives = @{}
 
 function Open-OfflineHive {
     param([string]$HivePath, [string]$Alias)
-
-    # Same approach as the original tiny11maker: takeown + icacls before reg load.
-    # The .NET ACL approach fails because Get-Acl/Set-Acl also needs the privilege
-    # chain set up first. takeown/icacls handle that internally.
-    & takeown  '/F' $HivePath            | Out-Null
-    & icacls   $HivePath '/grant' "Administrators:(F)" | Out-Null
-    Set-ItemProperty -Path $HivePath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-
     $r = & reg load "HKLM\$Alias" $HivePath 2>&1
     if ($LASTEXITCODE -ne 0) { throw "reg load failed for $Alias : $r" }
     $script:OpenHives[$Alias] = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($Alias, $true)
@@ -558,6 +550,14 @@ Mount-WindowsImage `
     -Path             $MountDir `
     -ScratchDirectory $TempDir
 
+# Take ownership of the entire mounted tree so reg.exe can load hive files.
+# This is exactly what tiny11maker does: takeown + icacls on the mount point
+# after DISM mounts it, before any reg load calls.
+Write-Step 'Taking ownership of mounted image (required for reg load)...'
+& takeown '/F' $MountDir '/R' '/D' 'Y' | Out-Null
+& icacls  $MountDir '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
+Write-Ok 'Ownership granted'
+
 #endregion
 
 #region ─── INJECT DEFENDER HALT + SHORTCUTS ─────────────────────────────────
@@ -761,7 +761,6 @@ Dismount-WindowsImage -Path $MountDir -Save
 #region ─── PATCH boot.wim ───────────────────────────────────────────────────
 
 Write-Step 'Patching boot.wim...'
-# Ensure boot.wim is also writable (same R/O inheritance issue)
 $bootWimPath = "$BuildRoot\sources\boot.wim"
 Set-ItemProperty -Path $bootWimPath -Name Attributes -Value ([IO.FileAttributes]::Normal)
 Mount-WindowsImage `
@@ -769,6 +768,10 @@ Mount-WindowsImage `
     -Index            2 `
     -Path             $MountDir `
     -ScratchDirectory $TempDir
+
+# Take ownership of boot.wim mount so reg load works here too
+& takeown '/F' $MountDir '/R' '/D' 'Y' | Out-Null
+& icacls  $MountDir '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
 
 Open-OfflineHive "$MountDir\Windows\System32\config\SYSTEM" 'zSYSTEM'
 foreach ($n in 'BypassCPUCheck','BypassRAMCheck','BypassSecureBootCheck','BypassStorageCheck','BypassTPMCheck') {
