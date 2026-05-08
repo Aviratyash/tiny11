@@ -8,22 +8,22 @@
     into the image. On first login after install, a scheduled task automatically
     places two desktop shortcuts:
 
-        🎮 Game Mode ON   — halts Defender (WdFilter + services + process suspend)
-        🛡 Game Mode OFF  — fully restores Defender
+        Game Mode ON   — halts Defender (WdFilter + services + process suspend)
+        Game Mode OFF  — fully restores Defender
 
     The script lives at  C:\GameMode\DefenderHalt.ps1  on the installed system.
     The shortcuts run hidden/elevated so no terminal window flashes.
 
     Build optimizations:
-      • Single DISM mount per WIM
-      • No WIM recompression (None compression on ESD export)
-      • Native .NET registry API — zero reg.exe spawns during hive edits
-      • Robocopy with /J (unbuffered NVMe I/O)
-      • Move instead of copy for WIM placement (same-volume rename)
-      • Feature list pre-queried once, no per-feature DISM launches
-      • Parallel scheduled-task folder deletion
-      • oscdimg without -o (no dedup scan)
-      • Async scratch cleanup
+      * Single DISM mount per WIM
+      * No WIM recompression (None compression on ESD export)
+      * Native .NET registry API — zero reg.exe spawns during hive edits
+      * Robocopy with /J (unbuffered NVMe I/O)
+      * Move instead of copy for WIM placement (same-volume rename)
+      * Feature list pre-queried once, no per-feature DISM launches
+      * Parallel scheduled-task folder deletion
+      * oscdimg without -o (no dedup scan)
+      * Async scratch cleanup
 
 .PARAMETER ISO
     Drive letter of mounted Windows 11 ISO (e.g. D).
@@ -39,8 +39,8 @@
       After Windows installs and you log in for the first time, the two
       Game Mode shortcuts will appear on your Desktop automatically.
       Before using "Game Mode ON", go to:
-        Windows Security → Virus & threat protection → Manage settings
-        → Tamper Protection → OFF
+        Windows Security -> Virus & threat protection -> Manage settings
+        -> Tamper Protection -> OFF
       You only need to do this once.
 #>
 
@@ -266,9 +266,9 @@ function Invoke-Halt {
         Write-Log 'ERROR: Tamper Protection is ON.'
         Write-Host ''
         Write-Host ' Tamper Protection must be OFF before Game Mode will work.' -ForegroundColor Red
-        Write-Host ' Windows Security → Virus & threat protection'               -ForegroundColor Yellow
-        Write-Host '   → Manage settings → Tamper Protection → OFF'              -ForegroundColor Yellow
-        Write-Host ' You only need to do this once.'                              -ForegroundColor Yellow
+        Write-Host ' Windows Security -> Virus & threat protection'              -ForegroundColor Yellow
+        Write-Host '   -> Manage settings -> Tamper Protection -> OFF'           -ForegroundColor Yellow
+        Write-Host ' You only need to do this once.'                             -ForegroundColor Yellow
         exit 1
     }
 
@@ -381,17 +381,6 @@ switch ($Mode) {
 #endregion
 
 #region ─── FIRST-LOGON TASK XML ──────────────────────────────────────────────
-#
-#  This scheduled task runs ONCE on first interactive logon (any user).
-#  It creates both desktop shortcuts for ALL users (Public Desktop),
-#  then unregisters itself so it never runs again.
-#
-#  The shortcut trick:
-#    • Target: powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass ...
-#    • WorkingDirectory: C:\GameMode
-#    • Verb "RunAs" is set via COM so UAC auto-elevates (no flashing terminal)
-#    • Icon pulled from shell32.dll (shield icon index 47)
-#
 
 $FirstLogonTaskXml = @'
 <?xml version="1.0" encoding="UTF-16"?>
@@ -457,7 +446,7 @@ New-GameShortcut `
     -Desc    'Restore Defender after gaming' `
     -IconIdx 44;
 
-Unregister-ScheduledTask -TaskName 'GameModeSetup' -Confirm:\$false -ErrorAction SilentlyContinue;
+Unregister-ScheduledTask -TaskName 'GameModeSetup' -Confirm:`$false -ErrorAction SilentlyContinue;
 "
       </Arguments>
     </Exec>
@@ -481,26 +470,31 @@ Get-WindowsImage -Mounted | ForEach-Object {
 #endregion
 
 #region ─── ISO INPUT & WIM ───────────────────────────────────────────────────
+#
+#  FIX: $ISO parameter has [ValidatePattern] which re-fires on every assignment.
+#  We immediately copy to $ISODrive (plain string, no validator) and never
+#  reassign $ISO again. All downstream path references use $ISODrive.
+#
 
 if (-not $ISO) { $ISO = Read-Host 'Enter mounted ISO drive letter (e.g. D)' }
-$ISO     = $ISO.TrimEnd(':') + ':'
-$WimPath = "$TempDir\install.wim"
+$ISODrive = $ISO.TrimEnd(':').ToUpper() + ':'   # e.g. "D:"
+$WimPath  = "$TempDir\install.wim"
 
-if (Test-Path "$ISO\sources\install.wim") {
-    Write-Step 'Copying install.wim → scratch...'
-    robocopy "$ISO\sources" $TempDir install.wim /J /R:0 /W:0 /NP /NDL /NFL | Out-Null
+if (Test-Path "$ISODrive\sources\install.wim") {
+    Write-Step 'Copying install.wim -> scratch...'
+    robocopy "$ISODrive\sources" $TempDir install.wim /J /R:0 /W:0 /NP /NDL /NFL | Out-Null
 }
-elseif (Test-Path "$ISO\sources\install.esd") {
-    Write-Step 'Converting ESD → WIM (no compression)...'
-    Get-WindowsImage -ImagePath "$ISO\sources\install.esd"
+elseif (Test-Path "$ISODrive\sources\install.esd") {
+    Write-Step 'Converting ESD -> WIM (no compression)...'
+    Get-WindowsImage -ImagePath "$ISODrive\sources\install.esd"
     $Index = Read-Host 'Enter index to export'
     Export-WindowsImage `
-        -SourceImagePath      "$ISO\sources\install.esd" `
+        -SourceImagePath      "$ISODrive\sources\install.esd" `
         -SourceIndex          $Index `
         -DestinationImagePath $WimPath `
         -CompressionType      None
 }
-else { throw "No install.wim or install.esd found on $ISO" }
+else { throw "No install.wim or install.esd found on $ISODrive" }
 
 Write-Step 'Available editions:'
 Get-WindowsImage -ImagePath $WimPath
@@ -511,7 +505,7 @@ $Index = Read-Host 'Enter desired edition index'
 #region ─── COPY ISO STRUCTURE ────────────────────────────────────────────────
 
 Write-Step 'Copying ISO structure...'
-robocopy "$ISO" $BuildRoot /E /J /MT:16 /R:0 /W:0 /XF install.wim install.esd /NFL /NDL /NP | Out-Null
+robocopy "$ISODrive" $BuildRoot /E /J /MT:16 /R:0 /W:0 /XF install.wim install.esd /NFL /NDL /NP | Out-Null
 Move-Item $WimPath "$BuildRoot\sources\install.wim" -Force
 
 #endregion
@@ -539,25 +533,19 @@ $GameModeDir = "$MountDir\GameMode"
 Write-Ok 'C:\GameMode\DefenderHalt.ps1 written'
 
 # 2. Write the scheduled task XML into the image's task store
-#    Windows reads task XMLs from \Windows\System32\Tasks\ at boot.
-#    We place it directly — no schtasks.exe needed at build time.
 $TaskDir = "$MountDir\Windows\System32\Tasks"
 [void][System.IO.Directory]::CreateDirectory($TaskDir)
 [System.IO.File]::WriteAllText("$TaskDir\GameModeSetup", $FirstLogonTaskXml,
-    [System.Text.Encoding]::Unicode)   # Task XML MUST be UTF-16 (Unicode) for Windows to parse it
+    [System.Text.Encoding]::Unicode)   # Task XML MUST be UTF-16 for Windows to parse it
 Write-Ok 'Scheduled task GameModeSetup injected'
 
-# 3. Register the task in the offline SOFTWARE hive so Task Scheduler
-#    knows it exists without a manual import on first boot.
-#    We add a minimal TaskCache entry — Task Scheduler rebuilds full metadata
-#    from the XML file on first service start.
+# 3. Register the task in the offline SOFTWARE hive
 Write-Step 'Registering task in offline SOFTWARE hive...'
 Open-OfflineHive "$MountDir\Windows\System32\config\SOFTWARE" 'zSOFTWARE'
 
 $DW = [Microsoft.Win32.RegistryValueKind]::DWord
 $SW = [Microsoft.Win32.RegistryValueKind]::String
 
-# Create a TaskCache\Tree entry so the Scheduler service picks it up
 $taskTreeSub = 'Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\GameModeSetup'
 Set-RegVal 'zSOFTWARE' $taskTreeSub 'Index' $DW 0
 Set-RegVal 'zSOFTWARE' $taskTreeSub 'SD'    ([Microsoft.Win32.RegistryValueKind]::Binary) `
@@ -773,10 +761,10 @@ $null = Start-Job -ScriptBlock {
 #endregion
 
 Write-Host ''
-Write-Host '═══════════════════════════════════════════════════════' -ForegroundColor Green
+Write-Host '=======================================================' -ForegroundColor Green
 Write-Host '  BUILD COMPLETE'                                         -ForegroundColor Green
 Write-Host "  ISO  : $OutputISO"                                      -ForegroundColor Green
 Write-Host '  After install, log in once — shortcuts appear on Desktop automatically.' -ForegroundColor Cyan
 Write-Host '  First: disable Tamper Protection in Windows Security.'  -ForegroundColor Yellow
 Write-Host '  Then:  double-click "Game Mode ON" before gaming.'      -ForegroundColor Yellow
-Write-Host '═══════════════════════════════════════════════════════' -ForegroundColor Green
+Write-Host '=======================================================' -ForegroundColor Green
