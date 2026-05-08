@@ -91,8 +91,71 @@ function Write-Warn { param([string]$M) Write-Host " WARN $M" -ForegroundColor Y
 
 $script:OpenHives = @{}
 
+function Grant-HiveAccess {
+    # Takes ownership of a hive file and grants Administrators full control.
+    # Offline hive files inside a mounted WIM carry restrictive SYSTEM-only ACLs
+    # that block reg.exe even when the process is running as Administrator.
+    param([string]$HivePath)
+
+    # Enable privileges that are present but disabled by default for Administrators
+    if (-not ('TokenPrivilege.Privileges' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace TokenPrivilege {
+    public static class Privileges {
+        [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)]
+        static extern bool AdjustTokenPrivileges(IntPtr htok, bool disall,
+            ref TokPriv1Luid newst, int len, IntPtr prev, IntPtr relen);
+        [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)]
+        static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
+        [DllImport("advapi32.dll", SetLastError=true)]
+        static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+        [StructLayout(LayoutKind.Sequential, Pack=1)]
+        struct TokPriv1Luid { public int Count; public long Luid; public int Attr; }
+        const int SE_PRIVILEGE_ENABLED = 2;
+        const int TOKEN_QUERY = 8;
+        const int TOKEN_ADJUST_PRIVILEGES = 32;
+        public static void Enable(string privilege) {
+            IntPtr hproc = System.Diagnostics.Process.GetCurrentProcess().Handle;
+            IntPtr htok  = IntPtr.Zero;
+            OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
+            TokPriv1Luid tp = new TokPriv1Luid();
+            tp.Count = 1; tp.Attr = SE_PRIVILEGE_ENABLED;
+            LookupPrivilegeValue(null, privilege, ref tp.Luid);
+            AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+    }
+}
+"@
+    }
+    [TokenPrivilege.Privileges]::Enable('SeTakeOwnershipPrivilege')
+    [TokenPrivilege.Privileges]::Enable('SeRestorePrivilege')
+    [TokenPrivilege.Privileges]::Enable('SeBackupPrivilege')
+
+    # Take ownership -> Administrators
+    $admins = New-Object System.Security.Principal.NTAccount('BUILTIN\Administrators')
+    $acl    = Get-Acl -Path $HivePath
+    $acl.SetOwner($admins)
+    Set-Acl -Path $HivePath -AclObject $acl
+
+    # Grant Administrators full control
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $admins,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $acl2 = Get-Acl -Path $HivePath
+    $acl2.AddAccessRule($rule)
+    Set-Acl -Path $HivePath -AclObject $acl2
+}
+
 function Open-OfflineHive {
     param([string]$HivePath, [string]$Alias)
+
+    # Fix ACLs before reg.exe tries to open the hive
+    Grant-HiveAccess $HivePath
+
     $r = & reg load "HKLM\$Alias" $HivePath 2>&1
     if ($LASTEXITCODE -ne 0) { throw "reg load failed for $Alias : $r" }
     $script:OpenHives[$Alias] = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($Alias, $true)
