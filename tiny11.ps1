@@ -116,6 +116,30 @@ function Close-OfflineHive {
     if ($LASTEXITCODE -ne 0) { Write-Warn "reg unload $Alias may not have fully released" }
 }
 
+function Open-Or-CreateSubKey {
+    # Walks every segment of a backslash-separated path, opening or creating
+    # each level with explicit ReadWriteSubTree permission.
+    # CreateSubKey on an offline hive fails for deep paths when any ancestor
+    # does not yet exist — this avoids that by stepping one level at a time.
+    param([Microsoft.Win32.RegistryKey]$Root, [string]$SubKeyPath)
+    $current = $Root
+    foreach ($segment in $SubKeyPath.Split('\')) {
+        $next = $current.OpenSubKey(
+            $segment,
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+        )
+        if ($null -eq $next) {
+            $next = $current.CreateSubKey(
+                $segment,
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+            )
+        }
+        if ($current -ne $Root) { $current.Close() }
+        $current = $next
+    }
+    return $current   # caller must .Close() the returned key
+}
+
 function Set-RegVal {
     param(
         [string]$HiveAlias,
@@ -125,8 +149,7 @@ function Set-RegVal {
         [object]$Value
     )
     $base = $script:OpenHives[$HiveAlias]
-    $key  = $base.OpenSubKey($SubKey, $true)
-    if ($null -eq $key) { $key = $base.CreateSubKey($SubKey, $true) }
+    $key  = Open-Or-CreateSubKey $base $SubKey
     $key.SetValue($Name, $Value, $Kind)
     $key.Close()
 }
