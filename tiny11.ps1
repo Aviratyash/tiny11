@@ -550,12 +550,16 @@ Mount-WindowsImage `
     -Path             $MountDir `
     -ScratchDirectory $TempDir
 
-# Take ownership of the entire mounted tree so reg.exe can load hive files.
-# This is exactly what tiny11maker does: takeown + icacls on the mount point
-# after DISM mounts it, before any reg load calls.
-Write-Step 'Taking ownership of mounted image (required for reg load)...'
-& takeown '/F' $MountDir '/R' '/D' 'Y' | Out-Null
-& icacls  $MountDir '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
+# Only take ownership of the config directory where hive files live.
+# Taking ownership of the entire mount tree corrupts DISM's mount state
+# and breaks WinSxS protected files — target only what reg.exe needs.
+Write-Step 'Taking ownership of config hives (required for reg load)...'
+$configDir  = "$MountDir\Windows\System32\config"
+$ntuserFile = "$MountDir\Users\Default\NTUSER.DAT"
+& takeown '/F' $configDir  '/R' '/D' 'Y' | Out-Null
+& icacls  $configDir  '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
+& takeown '/F' $ntuserFile | Out-Null
+& icacls  $ntuserFile '/grant' "Administrators:(F)"  | Out-Null
 Write-Ok 'Ownership granted'
 
 #endregion
@@ -769,9 +773,10 @@ Mount-WindowsImage `
     -Path             $MountDir `
     -ScratchDirectory $TempDir
 
-# Take ownership of boot.wim mount so reg load works here too
-& takeown '/F' $MountDir '/R' '/D' 'Y' | Out-Null
-& icacls  $MountDir '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
+# Only take ownership of config dir in boot.wim mount
+$configDir = "$MountDir\Windows\System32\config"
+& takeown '/F' $configDir '/R' '/D' 'Y' | Out-Null
+& icacls  $configDir '/grant' "Administrators:(F)" '/T' '/C' | Out-Null
 
 Open-OfflineHive "$MountDir\Windows\System32\config\SYSTEM" 'zSYSTEM'
 foreach ($n in 'BypassCPUCheck','BypassRAMCheck','BypassSecureBootCheck','BypassStorageCheck','BypassTPMCheck') {
